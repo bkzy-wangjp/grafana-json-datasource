@@ -1,58 +1,59 @@
-///<reference path="../node_modules/grafana-sdk-mocks/app/headers/common.d.ts" />
-import isEqual from 'lodash/isEqual';
-import isObject from 'lodash/isObject';
-import isUndefined from 'lodash/isUndefined';
+import { AnnotationEvent, DataQueryResponse, DataSourceApi, DataSourceInstanceSettings } from '@grafana/data';
+import { AnnotationQueryRequest } from '@grafana/data/types/datasource';
+import { getBackendSrv, getTemplateSrv } from '@grafana/runtime';
+import { isEqual, isObject } from 'lodash';
+import {
+  GenericOptions,
+  GrafanaQuery,
+  MetricFindTagKeys,
+  MetricFindTagValues,
+  MetricFindValue,
+  MultiValueVariable,
+  QueryRequest,
+  TextValuePair,
+} from './types';
 
-export class GenericDatasource {
+const supportedVariableTypes = ['adhoc', 'constant', 'custom', 'query', 'textbox'];
 
-  name: string;
+export class DataSource extends DataSourceApi<GrafanaQuery, GenericOptions> {
   url: string;
-  q: any;
-  backendSrv: any;
-  templateSrv: any;
   withCredentials: boolean;
   headers: any;
 
-  /** @ngInject **/
-  constructor(instanceSettings, $q, backendSrv, templateSrv) {
-    this.name = instanceSettings.name;
-    this.url = instanceSettings.url;
-    this.q = $q;
-    this.backendSrv = backendSrv;
-    this.templateSrv = templateSrv;
-    this.withCredentials = instanceSettings.withCredentials;
+  constructor(instanceSettings: DataSourceInstanceSettings<GenericOptions>) {
+    super(instanceSettings);
+
+    this.url = instanceSettings.url === undefined ? '' : instanceSettings.url;
+
+    this.withCredentials = instanceSettings.withCredentials !== undefined;
     this.headers = { 'Content-Type': 'application/json' };
     if (typeof instanceSettings.basicAuth === 'string' && instanceSettings.basicAuth.length > 0) {
       this.headers['Authorization'] = instanceSettings.basicAuth;
     }
   }
 
-  query(options) {
-    const query = options;
-    query.targets = this.buildQueryTargets(options);
+  query(options: QueryRequest): Promise<DataQueryResponse> {
+    const request = this.processTargets(options);
 
-    if (query.targets.length <= 0) {
-      return this.q.when({ data: [] });
+    if (request.targets.length === 0) {
+      return Promise.resolve({ data: [] });
     }
 
-    if (this.templateSrv.getAdhocFilters) {
-      query.adhocFilters = this.templateSrv.getAdhocFilters(this.name);
-    } else {
-      query.adhocFilters = [];
-    }
+    // @ts-ignore
+    request.adhocFilters = getTemplateSrv().getAdhocFilters(this.name);
 
     options.scopedVars = { ...this.getVariables(), ...options.scopedVars };
 
     return this.doRequest({
       url: `${this.url}/query`,
-      data: query,
+      data: request,
       method: 'POST',
     });
   }
 
-  testDatasource() {
+  testDatasource(): Promise<any> {
     return this.doRequest({
-      url: `${this.url}/`,
+      url: this.url,
       method: 'GET',
     }).then((response) => {
       if (response.status === 200) {
@@ -67,8 +68,47 @@ export class GenericDatasource {
     });
   }
 
-  annotationQuery(options) {
-    const query = this.templateSrv.replace(options.annotation.query, {}, 'glob');
+  metricFindQuery(query: string, options?: any, type?: string): Promise<MetricFindValue[]> {
+    const interpolated = {
+      type,
+      target: getTemplateSrv().replace(query, undefined, 'regex'),
+    };
+
+    return this.doRequest({
+      url: `${this.url}/search`,
+      data: interpolated,
+      method: 'POST',
+    }).then(this.mapToTextValue);
+  }
+
+  getTagKeys(options?: any): Promise<MetricFindTagKeys[]> {
+    return new Promise((resolve) => {
+      this.doRequest({
+        url: `${this.url}/tag-keys`,
+        method: 'POST',
+        data: options,
+      }).then((result: any) => {
+        return resolve(result.data);
+      });
+    });
+  }
+
+  getTagValues(options: any): Promise<MetricFindTagValues[]> {
+    return new Promise((resolve) => {
+      this.doRequest({
+        url: `${this.url}/tag-values`,
+        method: 'POST',
+        data: options,
+      }).then((result: any) => {
+        return resolve(result.data);
+      });
+    });
+  }
+
+  annotationQuery(
+    options: AnnotationQueryRequest<GrafanaQuery & { query: string; iconColor: string }>
+  ): Promise<AnnotationEvent[]> {
+    const query = getTemplateSrv().replace(options.annotation.query, {}, 'glob');
 
     const annotationQuery = {
       annotation: {
@@ -87,26 +127,13 @@ export class GenericDatasource {
       url: `${this.url}/annotations`,
       method: 'POST',
       data: annotationQuery,
-    }).then((result) => {
+    }).then((result: any) => {
       return result.data;
     });
   }
 
-  findMetricsQuery(query: string, type: string) {
-    const interpolated = {
-      type,
-      target: this.templateSrv.replace(query, null, 'regex'),
-    };
-
-    return this.doRequest({
-      url: `${this.url}/search`,
-      data: interpolated,
-      method: 'POST',
-    }).then(this.mapToTextValue);
-  }
-
-  mapToTextValue(result) {
-    return result.data.map((d, i) => {
+  mapToTextValue(result: any) {
+    return result.data.map((d: any, i: any) => {
       if (d && d.text && d.value) {
         return { text: d.text, value: d.value };
       }
@@ -118,126 +145,83 @@ export class GenericDatasource {
     });
   }
 
-  doRequest(options) {
+  doRequest(options: any) {
     options.withCredentials = this.withCredentials;
     options.headers = this.headers;
 
-    return this.backendSrv.datasourceRequest(options);
+    return getBackendSrv().datasourceRequest(options);
   }
 
-  buildQueryTargets(options) {
-    return options.targets
+  processTargets(options: QueryRequest) {
+    options.targets = options.targets
       .filter((target) => {
         // remove placeholder targets
-        return target.target !== 'select metric';
+        return target.target !== undefined;
       })
       .map((target) => {
-        const data = isUndefined(target.data) || target.data.trim() === ''
-          ? null
-          : JSON.parse(target.data);
+        if (target.data.trim() !== '') {
+          if (typeof target.data === 'string') {
+            target.data = target.data.replace((getTemplateSrv() as any).regex, (match) =>
+              this.cleanMatch(match, options)
+            );
+          }
 
-        if (data !== null) {
-          Object.keys(data).forEach((key) => {
-            const value = data[key];
-            if (typeof value !== 'string') {
-              return;
-            }
-
-            const matches = value.match(/\$([\w]+)/g);
-            if (matches !== null) {
-              if (matches.length > 1) {
-                console.error(
-                  'Use ${var1} format to specify multiple variables in one value' +
-                  `so we can safely replace that. Passed value was "${value}".`,
-                );
-              } else {
-                data[key] = this.cleanMatch(matches[0], options);
-
-                return;
-              }
-            }
-
-            const matchesWithBraces = value.match(/\${([\w-]+)}/g);
-            if (matchesWithBraces !== null) {
-              data[key] = value
-                .replace(/\${([\w-]+)}/g, match => this.cleanMatch(match, options));
-            }
-          });
+          target.data = JSON.parse(target.data);
         }
 
-        let targetValue = target.target;
-        if (typeof targetValue === 'string') {
-          targetValue = this.templateSrv.replace(
-            target.target.toString(),
-            options.scopedVars,
-            'regex',
-          );
+        if (typeof target.target === 'string') {
+          target.target = getTemplateSrv().replace(target.target.toString(), options.scopedVars, 'regex');
         }
 
-        return {
-          data,
-          target: targetValue,
-          refId: target.refId,
-          hide: target.hide,
-          type: target.type,
-        };
+        return target;
       });
+
+    return options;
   }
 
-  cleanMatch(match, options) {
-    const replacedMatch = this.templateSrv.replace(match, options.scopedVars, 'json');
-    if (typeof replacedMatch === 'string') {
-      return replacedMatch.substring(1, replacedMatch.length - 1);
+  cleanMatch(match: string, options: any) {
+    const replacedMatch = getTemplateSrv().replace(match, options.scopedVars, 'json');
+    if (
+      typeof replacedMatch === 'string' &&
+      replacedMatch[0] === '"' &&
+      replacedMatch[replacedMatch.length - 1] === '"'
+    ) {
+      return JSON.parse(replacedMatch);
     }
     return replacedMatch;
   }
 
   getVariables() {
-    const index = isUndefined(this.templateSrv.index) ? {} : this.templateSrv.index;
-    const variables = {};
-    Object.keys(index).forEach((key) => {
-      const variable = index[key];
+    const variables: { [id: string]: TextValuePair } = {};
+    Object.values(getTemplateSrv().getVariables()).forEach((variable) => {
+      if (!supportedVariableTypes.includes(variable.type)) {
+        console.warn(`Variable of type "${variable.type}" is not supported`);
 
-      let variableValue = variable.current.value;
+        return;
+      }
+
+      if (variable.type === 'adhoc') {
+        // These are being added to request.adhocFilters
+        return;
+      }
+
+      const supportedVariable = variable as MultiValueVariable;
+
+      let variableValue = supportedVariable.current.value;
       if (variableValue === '$__all' || isEqual(variableValue, ['$__all'])) {
-        if (variable.allValue === null) {
-          variableValue = variable.options.slice(1).map(textValuePair => textValuePair.value);
+        if (supportedVariable.allValue === null || supportedVariable.allValue === '') {
+          variableValue = supportedVariable.options.slice(1).map((textValuePair) => textValuePair.value);
         } else {
-          variableValue = variable.allValue;
+          variableValue = supportedVariable.allValue;
         }
       }
 
-      variables[key] = {
-        text: variable.current.text,
+      variables[supportedVariable.id] = {
+        text: supportedVariable.current.text,
         value: variableValue,
       };
     });
 
     return variables;
   }
-
-  getTagKeys(options) {
-    return new Promise((resolve, reject) => {
-      this.doRequest({
-        url: `${this.url}/tag-keys`,
-        method: 'POST',
-        data: options,
-      }).then((result) => {
-        return resolve(result.data);
-      });
-    });
-  }
-
-  getTagValues(options) {
-    return new Promise((resolve, reject) => {
-      this.doRequest({
-        url: `${this.url}/tag-values`,
-        method: 'POST',
-        data: options,
-      }).then((result) => {
-        return resolve(result.data);
-      });
-    });
-  }
-
 }

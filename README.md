@@ -1,7 +1,10 @@
-# JSON Datasource – a generic backend datasource
+# JSON API Grafana Datasource
 
-The JSON Datasource executes JSON requests against arbitrary backends.   
-_JSON Datasource is built on top of the [Simple JSON Datasource](https://github.com/grafana/simple-json-datasource)._ It has refactored code, additional features and active development.
+[![Build](https://github.com/simPod/GrafanaJsonDatasource/workflows/CI/badge.svg)](https://github.com/simPod/GrafanaJsonDatasource/actions?query=workflow%3A%22CI%22)
+[![Marketplace](https://img.shields.io/badge/dynamic/json?logo=grafana&color=F47A20&label=marketplace&prefix=v&query=%24.items%5B%3F%28%40.slug%20%3D%3D%20%22simpod-json-datasource%22%29%5D.version&url=https%3A%2F%2Fgrafana.com%2Fapi%2Fplugins)](https://grafana.com/grafana/plugins/simpod-json-datasource)
+[![Downloads](https://img.shields.io/badge/dynamic/json?logo=grafana&color=F47A20&label=downloads&query=%24.items%5B%3F%28%40.slug%20%3D%3D%20%22simpod-json-datasource%22%29%5D.downloads&url=https%3A%2F%2Fgrafana.com%2Fapi%2Fplugins)](https://grafana.com/grafana/plugins/simpod-json-datasource)
+
+The JSON Datasource executes requests against arbitrary backends and parses JSON response into Grafana dataframes.
 
 ## Contents
 
@@ -9,7 +12,7 @@ _JSON Datasource is built on top of the [Simple JSON Datasource](https://github.
 - [Setup](#setup)
 - [API](#api)
   - [/search](#search)
-  - [/query](#tquery)
+  - [/query](#query)
   - [/annotations](#annotations)
   - [/tag-keys](#tag-keys)
   - [/tag-values](#tag-values)
@@ -23,8 +26,7 @@ To install this plugin using the `grafana-cli` tool:
  grafana-cli plugins install simpod-json-datasource
  ```
 
-See [here](https://grafana.com/plugins/simpod-json-datasource/installation) for more
-information.
+See [here](https://grafana.com/grafana/plugins/simpod-json-datasource/) for more information.
 
 ## Setup
 
@@ -35,45 +37,61 @@ When adding datasource add your API endpoint to the `URL` field. That's where da
 
 ## API
 
-To work with this datasource the backend needs to implement 4 urls:
+An OpenAPI definition is defined at [openapi.yaml](https://github.com/simPod/GrafanaJsonDatasource/blob/master/openapi.yaml).
 
-- `/` should return 200 ok. Used for "Test connection" on the datasource config page.
-- `/search` should return available metrics when invoked by the find metric options on the query tab in panels.
-- `/query` should return metrics based on input.
-- `/annotations` should return annotations.
+To work with this datasource the backend needs to implement 4 endpoints:
+
+- `GET /` with 200 status code response. Used for "Test connection" on the datasource config page.
+- `POST /search` returning available metrics when invoked.
+- `POST /query` returning metrics based on input.
+- `POST /annotations` returning annotations.
 
 Those two urls are optional:
 
-- `/tag-keys` should return tag keys for ad hoc filters.
-- `/tag-values` should return tag values for ad hoc filters.
+- `POST /tag-keys` returning tag keys for ad hoc filters.
+- `POST /tag-values` returning tag values for ad hoc filters.
 
 ### /search
 
-Example request
+`POST /search`
 
-``` json
+Grafana issues this request on 
+
+1. _Variables > New/Edit_ page. `Query` field value is passed in a body as 
+
+```json
+{ "target": "query field value" }
+```
+
+2. `Panel > Queries` page. `Format As` and `Metric` values are passed in a body as
+
+```json
 { "type": "timeseries", "target": "upper_50" }
 ```
 
-The search api can either return an array or map.
+The way you handle those values is up to you.
 
-Example array response
+The response body can either contain an array or a map.
 
-``` json
+Example array response:
+
+```json
 ["upper_25","upper_50","upper_75","upper_90","upper_95"]
 ```
 
-Example map response
+Example map response:
 
-``` json
+```json
 [ { "text": "upper_25", "value": 1}, { "text": "upper_75", "value": 2} ]
 ```
 
 ### /query
 
-Example `timeseries` request
+`POST /query`
 
-``` json
+Example `timeseries` request:
+
+```json
 {
   "panelId": 1,
   "range": {
@@ -103,14 +121,14 @@ Example `timeseries` request
 }
 ```
 
-Example `timeseries` response
+Example `timeseries` response (metric value as a float , unixtimestamp in milliseconds):
 
-``` javascript
+```json
 [
   {
     "target":"pps in",
     "datapoints":[
-      [622,1450754160000],  // Metric value as a float , unixtimestamp in milliseconds
+      [622,1450754160000],
       [365,1450754220000]
     ]
   },
@@ -120,14 +138,14 @@ Example `timeseries` response
       [861,1450754160000],
       [767,1450754220000]
     ]
-  }
+  },
   {
     "target":"errors out",
     "datapoints":[
       [861,1450754160000],
       [767,1450754220000]
     ]
-  }
+  },
   {
     "target":"errors in",
     "datapoints":[
@@ -142,20 +160,22 @@ _The relation between `target` in request and response is 1:n. You can return mu
 
 Example `table` response to be returned if the metric selected is `"type": "table"`:
 
-``` json
-{
-  "columns":[
-    {"text":"Time","type":"time"},
-    {"text":"Country","type":"string"},
-    {"text":"Number","type":"number"}
-  ],
-  "rows":[
-    [1234567,"SE",123],
-    [1234567,"DE",231],
-    [1234567,"US",321]
-  ],
-  "type":"table"
-}
+```json
+[
+  {
+    "columns":[
+      {"text":"Time","type":"time"},
+      {"text":"Country","type":"string"},
+      {"text":"Number","type":"number"}
+    ],
+    "rows":[
+      [1234567,"SE",123],
+      [1234567,"DE",231],
+      [1234567,"US",321]
+    ],
+    "type":"table"
+  }
+]
 ```
 
 #### Additional data
@@ -176,10 +196,11 @@ You can also enter variables:
 
 ### /annotations
 
-The annotation request from the Simple JSON Datasource is a POST request to
-the `/annotations` endpoint in your datasource. The JSON request body looks like this:
+`POST /annotations`
 
-``` json
+The JSON request body looks like this:
+
+```json
 {
   "range": {
     "from": "2016-04-15T13:44:39.070Z",
@@ -194,30 +215,38 @@ the `/annotations` endpoint in your datasource. The JSON request body looks like
     "datasource": "JSON Datasource",
     "iconColor": "rgba(255, 96, 96, 1)",
     "enable": true,
-    "query": "#deploy",
+    "query": "#deploy"
   },
    "variables": []
 }
 ```
 
-Grafana expects a response containing an array of annotation objects in the
-following format:
+Grafana expects a response containing an array of annotation objects.
 
-``` javascript
+Field explanation:
+* `text` - Text for the annotation. (required)
+* `title` - The title for the annotation tooltip. (optional)
+* `isRegion` - Whether is region. (optional) (http://docs.grafana.org/reference/annotations/#adding-regions-events)
+* `time` - Time since UNIX Epoch in milliseconds. (required)
+* `timeEnd` - Time since UNIX Epoch in milliseconds (required if `isRegion` is true )
+* `tags` - Tags for the annotation. (optional)
+
+```json
 [
   {
-    "text": "text shown in body" // Text for the annotation. (required)
-    "title": "Annotation Title", // The title for the annotation tooltip. (optional)
-    "isRegion": true, // Whether is region. (optional) (http://docs.grafana.org/reference/annotations/#adding-regions-events)
-    "time": "timestamp", // Time since UNIX Epoch in milliseconds. (required)
-    "timeEnd": "timestamp", // Time since UNIX Epoch in milliseconds (required if `isRegion` is true )
-    "tags": ["tag1"], // Tags for the annotation. (optional)
+    "text": "text shown in body",
+    "title": "Annotation Title",
+    "isRegion": true,
+    "time": "timestamp",
+    "timeEnd": "timestamp",
+    "tags": ["tag1"]
   }
 ]
 ```
 
+
 Note: If the datasource is configured to connect directly to the backend, you
-also need to implement an OPTIONS endpoint at `/annotations` that responds
+also need to implement `OPTIONS /annotations` that responds
 with the correct CORS headers:
 
 ```
@@ -228,15 +257,17 @@ Access-Control-Allow-Origin:*
 
 ### /tag-keys
 
-Example request
+`POST /tag-keys`
 
-``` json
+Example request body
+
+```json
 { }
 ```
 
 The tag keys api returns:
 
-``` json
+```json
 [
     {"type":"string","text":"City"},
     {"type":"string","text":"Country"}
@@ -245,15 +276,17 @@ The tag keys api returns:
 
 ### /tag-values
 
-Example request
+`POST /tag-values`
 
-``` json
+Example request body
+
+```json
 {"key": "City"}
 ```
 
 The tag values api returns:
 
-``` json
+```json
 [
     {"text": "Eins!"},
     {"text": "Zwei"},
